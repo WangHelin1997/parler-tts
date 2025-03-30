@@ -39,7 +39,7 @@ accelerate launch ./training/run_parler_tts_training.py \
     --max_text_length 600 \
     --preprocessing_num_workers 32 \
     --do_train true \
-    --num_train_epochs 5 \
+    --num_train_epochs 10 \
     --gradient_accumulation_steps 6 \
     --gradient_checkpointing false \
     --per_device_train_batch_size 4 \
