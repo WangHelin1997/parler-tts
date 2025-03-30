@@ -314,6 +314,30 @@ class DataTrainingArguments:
         default=2,
         metadata={"help": ("Pad to multiple of for tokenizers.")},
     )
+    mls_dir: str = field(
+        default=None,
+        metadata={"help": "mls audio dir"},
+    )
+    librittsrmix_dir: str = field(
+        default=None,
+        metadata={"help": "librittsrmix audio dir"},
+    )
+    gigaspeech_dir: str = field(
+        default=None,
+        metadata={"help": "gigaspeech audio dir"},
+    )
+    commonvoice_dir: str = field(
+        default=None,
+        metadata={"help": "commonvoice audio dir"},
+    )
+    source_column_name: str = field(
+        default="source",
+        metadata={"help": "commonvoice audio dir"},
+    )
+    wandb_key: str = field(
+        default=None,
+        metadata={"help": "The name of the source column."},
+    )
 
 
 @dataclass
