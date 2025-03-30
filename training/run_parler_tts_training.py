@@ -28,6 +28,7 @@ from datetime import timedelta
 import inspect
 from tqdm import tqdm
 from pathlib import Path
+import wandb
 
 import torch
 from torch.utils.data import DataLoader
@@ -86,6 +87,9 @@ def main():
     # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
     # information sent is the one passed as arguments along with your Python/PyTorch versions.
     send_example_telemetry("run_parler_tts", model_args, data_args)
+    
+    if data_args.wandb_key is not None:
+        wandb.login(key=data_args.wandb_key)
 
     if training_args.dtype == "float16":
         mixed_precision = "fp16"
@@ -194,7 +198,7 @@ def main():
         cache_dir=model_args.cache_dir,
         token=data_args.token,
         trust_remote_code=data_args.trust_remote_code,
-    )
+    ) 
     sampling_rate = feature_extractor.sampling_rate
 
     # load prompt tokenizer
@@ -239,6 +243,7 @@ def main():
         columns_to_keep = {
             "target_audio_column_name": data_args.target_audio_column_name,
             "prompt_column_name": data_args.prompt_column_name,
+            "source": data_args.source_column_name,
         }
         if data_args.description_column_name is not None:
             columns_to_keep["description_column_name"] = data_args.description_column_name
@@ -247,8 +252,6 @@ def main():
             raw_datasets["train"] = load_multiple_datasets(
                 accelerator,
                 data_args.train_dataset_name,
-                data_args.train_dataset_config_name,
-                metadata_dataset_names=data_args.train_metadata_dataset_name,
                 splits=data_args.train_split_name,
                 dataset_samples=data_args.train_dataset_samples,
                 seed=training_args.seed,
@@ -278,10 +281,6 @@ def main():
             raw_datasets["eval"] = load_multiple_datasets(
                 accelerator,
                 data_args.eval_dataset_name if data_args.eval_dataset_name else data_args.train_dataset_name,
-                data_args.eval_dataset_config_name
-                if data_args.eval_dataset_config_name
-                else data_args.train_dataset_config_name,
-                metadata_dataset_names=data_args.eval_metadata_dataset_name,
                 splits=data_args.eval_split_name,
                 cache_dir=model_args.cache_dir,
                 num_proc=data_args.preprocessing_num_workers,
@@ -329,15 +328,31 @@ def main():
         }
     )
 
+    with open("events.txt", "r") as f:
+        events = [line.strip() for line in f]
+    events = ["<"+event.lower().replace(" ", "_")+">" for event in events]
+    events.append("<B_start>")
+    events.append("<B_end>")
+    events.append("<I_start>")
+    events.append("<I_end>")
+
+    special_tokens = {"additional_special_tokens": events}
+    prompt_tokenizer.add_special_tokens(special_tokens)
+    description_tokenizer.add_special_tokens(special_tokens)
+    padded_vocab_size = ((len(prompt_tokenizer) + 127) // 128) * 128 
+    config.vocab_size = padded_vocab_size 
+
     # create model
     model = ParlerTTSForConditionalGeneration.from_pretrained(
         model_args.model_name_or_path,
+        ignore_mismatched_sizes=True,
         cache_dir=model_args.cache_dir,
         config=config,
         token=data_args.token,
         trust_remote_code=data_args.trust_remote_code,
         attn_implementation={"decoder": model_args.attn_implementation, "text_encoder": "eager"},
     )
+    model.text_encoder.resize_token_embeddings(padded_vocab_size)
 
     # enable gradient checkpointing if necessary
     if training_args.gradient_checkpointing:
@@ -424,6 +439,10 @@ def main():
         encoder_data_collator = DataCollatorEncodecWithPadding(
             feature_extractor,
             audio_column_name=target_audio_column_name,
+            mls_dir=data_args.mls_dir,
+            librittsrmix_dir=data_args.librittsrmix_dir,
+            gigaspeech_dir=data_args.gigaspeech_dir,
+            commonvoice_dir=data_args.commonvoice_dir,
             feature_extractor_input_name=feature_extractor_input_name,
             max_length=max_target_length,
             padding=padding,
