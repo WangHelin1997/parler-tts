@@ -263,6 +263,10 @@ def main():
                 audio_column_name=data_args.target_audio_column_name,
                 sampling_rate=sampling_rate,
                 logger=logger,
+                mls_dir=data_args.mls_dir,
+                librittsrmix_dir=data_args.librittsrmix_dir,
+                gigaspeech_dir=data_args.gigaspeech_dir,
+                commonvoice_dir=data_args.commonvoice_dir,
                 # streaming=data_args.streaming, TODO(SG): optionally enable streaming mode
             )
 
@@ -290,6 +294,10 @@ def main():
                 audio_column_name=data_args.target_audio_column_name,
                 sampling_rate=sampling_rate,
                 logger=logger,
+                mls_dir=data_args.mls_dir,
+                librittsrmix_dir=data_args.librittsrmix_dir,
+                gigaspeech_dir=data_args.gigaspeech_dir,
+                commonvoice_dir=data_args.commonvoice_dir,
                 # streaming=data_args.streaming, TODO(SG): optionally enable streaming mode
             )
 
