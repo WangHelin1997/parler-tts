@@ -48,8 +48,8 @@ accelerate launch ./training/run_parler_tts_training.py \
     --adam_beta2 0.99 \
     --weight_decay 0.01 \
     --lr_scheduler_type "constant_with_warmup" \
-    --warmup_steps 2000 \
-    --logging_steps 100 \
+    --warmup_steps 4000 \
+    --logging_steps 200 \
     --freeze_text_encoder false \
     --per_device_eval_batch_size 4 \
     --audio_encoder_per_device_batch_size 24 \
