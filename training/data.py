@@ -201,6 +201,10 @@ def load_multiple_datasets(
     sampling_rate: Optional[int] = None,
     audio_column_name: Optional[str] = None,
     logger: Optional[logging.Logger] = None,
+    librittsrmix_dir: Optional[Union[List, str]] = None,
+    mls_dir: Optional[Union[List, str]] = None,
+    gigaspeech_dir: Optional[Union[List, str]] = None,
+    commonvoice_dir: Optional[Union[List, str]] = None,
     **kwargs,
 ) -> Union[Dataset, IterableDataset]:
     dataset_names_dict = convert_dataset_str_to_list(
@@ -227,6 +231,26 @@ def load_multiple_datasets(
 
             if columns_to_keep is not None:
                 dataset = dataset.remove_columns(set(dataset_features - columns_to_keep))
+
+            def resolve_path(example):
+                path = example["audio_path"]
+                source = example["source"]
+
+                if source == "libritts-r":
+                    full_path = os.path.join(librittsrmix_dir, path)
+                elif source == "mls":
+                    full_path = os.path.join(mls_dir, path)
+                elif source == "gigaspeech":
+                    full_path = os.path.join(gigaspeech_dir, path)
+                elif source == "commonvoice":
+                    full_path = os.path.join(commonvoice_dir, path)
+                else:
+                    return False  # unknown source
+
+                return os.path.exists(full_path)
+                
+            dataset = dataset.filter(resolve_path, num_proc=16)
+
         all_datasets.append(dataset)
 
     if len(all_datasets) == 1:
