@@ -5,8 +5,8 @@ COMMONVOICE_WAV_DIR='/export/corpora7/CapSpeech-CommonVoice'
 OUTPUT_DIR="./output_train/"
 TEMPORY_SAVE_TO_DISK="./audio_code_train/"
 SAVE_TO_DISK="./dataset_train/"
-WANDB_KEY='4d2c4bd831f428b13d975945c38b52c74ffd2f28'
-HUGGINGFACE_KEY='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'
+WANDB_KEY=''
+HUGGINGFACE_KEY=''
 
 export CUDA_LAUNCH_BLOCKING=1
 export TORCH_USE_CUDA_DSA=1
