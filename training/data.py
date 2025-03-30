@@ -1,7 +1,7 @@
 import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Union
-
+import os
 import datasets
 import numpy as np
 import torch
@@ -9,7 +9,8 @@ from accelerate import Accelerator
 from datasets import Dataset, IterableDataset, concatenate_datasets, interleave_datasets, load_dataset
 from tqdm import tqdm
 from transformers import AutoFeatureExtractor, AutoTokenizer
-
+import torchaudio
+import torchaudio.transforms as T
 
 @dataclass
 class DataCollatorEncodecWithPadding:
@@ -20,6 +21,10 @@ class DataCollatorEncodecWithPadding:
 
     feature_extractor: AutoFeatureExtractor
     audio_column_name: str
+    mls_dir: Optional[str] = None
+    librittsrmix_dir: Optional[str] = None
+    gigaspeech_dir: Optional[str] = None
+    commonvoice_dir: Optional[str] = None
     feature_extractor_input_name: Optional[str] = "input_values"
     max_length: Optional[int] = None
     padding: Optional[str] = "longest"
@@ -27,16 +32,43 @@ class DataCollatorEncodecWithPadding:
     def __call__(self, features: List[Dict[str, Union[List[int], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
         # split inputs and labels since they have to be of different lengths and need
         # different padding methods
-        audios = [feature[self.audio_column_name]["array"] for feature in features]
+        sampling_rate = self.feature_extractor.sampling_rate
+        # load audio
+        audios = []
+        for f in features:
+            path = f[self.audio_column_name]
+            source = f["source"]
+            if source == "libritts-r":
+                path = os.path.join(self.librittsrmix_dir, path)
+            elif source == "mls":
+                path = os.path.join(self.mls_dir, path)
+            elif source == "gigaspeech":
+                path = os.path.join(self.gigaspeech_dir, path)
+            elif source == "commonvoice":
+                path = os.path.join(self.commonvoice_dir, path)
+            else:
+                raise ValueError(source)
+
+            if os.path.exists(path):
+                waveform, sr = torchaudio.load(path)
+                if sr != sampling_rate:
+                    resampler = T.Resample(orig_freq=sr, new_freq=sampling_rate)
+                    waveform = resampler(waveform)
+                if waveform.shape[0] > 1:
+                    waveform = waveform.mean(dim=0, keepdim=True)
+                audios.append(waveform.squeeze())
+            else:
+                print(f"Read error: {path}")
+
+
         len_audio = [len(audio) for audio in audios]
         if self.max_length is not None:
             audios = [audio[: min(l, self.max_length)] for audio, l in zip(audios, len_audio)]
 
         # since resampling has already been performed in the 'load_multiple_datasets' function,
         # a fixed sampling_rate(44100hz) is passed to the feature_extractor.
-        sampling_rate = self.feature_extractor.sampling_rate
         batch = self.feature_extractor(
-            audios, sampling_rate=sampling_rate, return_tensors="pt", padding=self.padding, max_length=self.max_length
+            [np.asarray(a, dtype=np.float32) for a in audios], sampling_rate=sampling_rate, return_tensors="pt", padding=self.padding, max_length=self.max_length
         )
         batch["len_audio"] = torch.tensor(len_audio).unsqueeze(1)
         return batch
@@ -116,34 +148,18 @@ class DataCollatorParlerTTSWithPadding:
 
 def convert_dataset_str_to_list(
     dataset_names,
-    dataset_config_names,
-    metadata_dataset_names=None,
     splits=None,
     dataset_samples=None,
     default_split="train",
 ):
     if isinstance(dataset_names, str):
         dataset_names = dataset_names.split("+")
-        dataset_config_names = dataset_config_names.split("+")
         splits = splits.split("+") if splits is not None else None
         dataset_samples = dataset_samples.split("+") if dataset_samples is not None else None
-        metadata_dataset_names = metadata_dataset_names.split("+") if metadata_dataset_names is not None else None
-
-    # basic checks to ensure we've got the right number of datasets/configs/splits/columns/probs
-    if len(dataset_names) != len(dataset_config_names):
-        raise ValueError(
-            f"Ensure one config is passed for each dataset, got {len(dataset_names)} datasets and"
-            f" {len(dataset_config_names)} configs."
-        )
 
     if splits is not None and len(splits) != len(dataset_names):
         raise ValueError(
             f"Ensure one split is passed for each dataset, got {len(dataset_names)} datasets and {len(splits)} splits."
-        )
-
-    if metadata_dataset_names is not None and len(metadata_dataset_names) != len(dataset_names):
-        raise ValueError(
-            f"Ensure one metadata dataset is passed for each dataset, got {len(dataset_names)} datasets and {len(metadata_dataset_names)} metadata datasets."
         )
 
     if dataset_samples is not None:
@@ -163,9 +179,7 @@ def convert_dataset_str_to_list(
         dataset_names_dict.append(
             {
                 "name": ds_name,
-                "config": dataset_config_names[i],
                 "split": splits[i],
-                "metadata_dataset_name": metadata_dataset_names[i],
                 "samples": dataset_samples[i],
             }
         )
@@ -175,8 +189,6 @@ def convert_dataset_str_to_list(
 def load_multiple_datasets(
     accelerator: Accelerator,
     dataset_names: Union[List, str],
-    dataset_config_names: Union[List, str],
-    metadata_dataset_names: Optional[str] = None,
     splits: Optional[Union[List, str]] = None,
     label_column_names: Optional[List] = None,
     stopping_strategy: Optional[str] = "first_exhausted",
@@ -192,7 +204,7 @@ def load_multiple_datasets(
     **kwargs,
 ) -> Union[Dataset, IterableDataset]:
     dataset_names_dict = convert_dataset_str_to_list(
-        dataset_names, dataset_config_names, metadata_dataset_names, splits, label_column_names, dataset_samples
+        dataset_names, splits, label_column_names, dataset_samples
     )
 
     if dataset_samples is not None:
@@ -207,87 +219,11 @@ def load_multiple_datasets(
         with accelerator.local_main_process_first():
             dataset = load_dataset(
                 dataset_dict["name"],
-                dataset_dict["config"],
                 split=dataset_dict["split"],
                 streaming=streaming,
                 **kwargs,
             )
             dataset_features = dataset.features.keys()
-
-            if sampling_rate is not None and audio_column_name is not None:
-                # resample target audio
-                dataset = dataset.cast_column(audio_column_name, datasets.features.Audio(sampling_rate=sampling_rate))
-
-            metadata_dataset_name = dataset_dict["metadata_dataset_name"]
-            if metadata_dataset_name is not None:
-                logger.info(
-                    f'Merging {dataset_dict["name"]} - {dataset_dict["split"]} with {metadata_dataset_name} - {dataset_dict["split"]}'
-                )
-                metadata_dataset = load_dataset(
-                    metadata_dataset_name,
-                    dataset_dict["config"],
-                    split=dataset_dict["split"],
-                    streaming=streaming,
-                    **kwargs,
-                )
-
-                # TODO(YL): I forgot to create unique ids for MLS english.
-                # To iterate faster, I bypass the original id check and do another one. - Done once because assuming it won't change next time
-                # if dataset_dict["name"] == "parler-tts/mls_eng_10k":
-                #     def concat_ids(book_id, speaker_id, begin_time):
-                #         return {"id": f"{book_id}_{speaker_id}_{str(begin_time).replace('.', '_')}"}
-                #     dataset = dataset.map(concat_ids, input_columns=["book_id", "speaker_id", "begin_time"], num_proc=24)
-                #     metadata_dataset = metadata_dataset.map(concat_ids, input_columns=["book_id", "speaker_id", "begin_time"], num_proc=24)
-                #     metadata_dataset = metadata_dataset.rename_column(id_column_name, f"metadata_{id_column_name}")
-
-                if dataset_dict["name"] not in {"parler-tts/mls_eng_10k", "parler-tts/mls_eng"}:
-                    if id_column_name is not None and id_column_name not in dataset.column_names:
-                        raise ValueError(
-                            f"id_column_name={id_column_name} but has not been found in the dataset columns"
-                            f"- one of {', '.join(list(dataset.column_names))}."
-                        )
-                    if id_column_name is not None and id_column_name not in metadata_dataset.column_names:
-                        raise ValueError(
-                            f"id_column_name={id_column_name} but has not been found in the metadata dataset columns"
-                            f"- one of {', '.join(list(metadata_dataset.column_names))}."
-                        )
-                    elif id_column_name is not None:
-                        metadata_dataset = metadata_dataset.rename_column(id_column_name, f"metadata_{id_column_name}")
-
-                metadata_columns_to_remove = set(metadata_dataset.column_names).intersection(set(dataset.column_names))
-
-                if prompt_column_name is not None:
-                    # We might have applied some transformations to the prompts (e.g  punctuation restoration)
-                    # so we make sure to remove it from the original dataset
-                    if prompt_column_name in dataset.column_names:
-                        logger.info(
-                            f"REMOVE {prompt_column_name} from dataset {dataset_dict['name']} - dataset_dict['split']"
-                        )
-                        dataset.remove_columns(prompt_column_name)
-
-                metadata_columns_to_remove = set(metadata_dataset.column_names).intersection(set(dataset.column_names))
-                metadata_dataset = metadata_dataset.remove_columns(metadata_columns_to_remove)
-
-                dataset = concatenate_datasets([dataset, metadata_dataset], axis=1)
-
-                if id_column_name is not None and dataset_dict["name"] not in {
-                    "parler-tts/mls_eng_10k",
-                    "parler-tts/mls_eng",
-                }:
-                    if (
-                        len(
-                            dataset.filter(
-                                lambda id1, id2: id1 != id2,
-                                input_columns=[id_column_name, f"metadata_{id_column_name}"],
-                            )
-                        )
-                        != 0
-                    ):
-                        raise ValueError(
-                            f"Concatenate didn't work. Some ids don't correspond on dataset {dataset_dict['name']}"
-                        )
-
-                dataset_features = dataset.features.keys()
 
             if columns_to_keep is not None:
                 dataset = dataset.remove_columns(set(dataset_features - columns_to_keep))
